@@ -10,3 +10,4 @@ storage/index/*
 storage/logs/*
 .idea/
 .vscode/
+.env
