@@ -11,7 +11,7 @@ load_dotenv()
 @dataclass
 class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    gen_model: str = os.getenv("GEN_MODEL", "gpt-4o-mini")
+    gen_model: str = os.getenv("GEN_MODEL", "gpt-4o")
     embed_model: str = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
     rerank_model: str = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
     index_path: str = os.getenv("INDEX_PATH", "/home/maryam_najafi/ul_bot/ul_rag_assistant/storage/index/ul_index.pkl")
