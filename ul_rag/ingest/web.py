@@ -71,3 +71,94 @@ def fetch_ul_pages(seeds_path: str, out_jsonl: str) -> None:
             f_out.write(json.dumps(doc, ensure_ascii=False) + "\n")
 
     log.info(f"Wrote corpus JSONL to {out_jsonl}")
+
+
+
+import json
+import time
+from urllib.parse import urljoin, urlparse
+
+import httpx
+from bs4 import BeautifulSoup
+
+def is_ul_url(url: str) -> bool:
+    # Only follow URLs that belong to UL or whitelisted domains
+    parsed = urlparse(url)
+    return parsed.netloc.endswith("ul.ie") or parsed.netloc.endswith("lero.ie") or parsed.netloc.endswith("pure.ul.ie")
+
+def clean_html(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "header", "footer", "nav"]):
+        tag.decompose()
+    text = soup.get_text(separator=" ")
+    text = " ".join(text.split())
+    return text
+
+def crawl_ul(seeds_path: str, out_path: str, max_depth: int = 3, max_pages: int = 2000, delay: float = 1.0):
+    # 1. Load seeds
+    seeds = []
+    with open(seeds_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            url = obj.get("url")
+            if url:
+                seeds.append(url)
+
+    visited = set()
+    queue = [(url, 0) for url in seeds]  # (url, depth)
+    n_pages = 0
+
+    client = httpx.Client(timeout=20.0, follow_redirects=True)
+
+    with open(out_path, "w", encoding="utf-8") as out_f:
+        while queue and n_pages < max_pages:
+            url, depth = queue.pop(0)
+            if url in visited:
+                continue
+            visited.add(url)
+
+            if depth > max_depth:
+                continue
+            if not is_ul_url(url):
+                continue
+
+            try:
+                resp = client.get(url)
+            except Exception as e:
+                print(f"[WARN] Fetch error {url}: {e}")
+                continue
+
+            if resp.status_code != 200:
+                print(f"[WARN] Non-200 for {url}: {resp.status_code}")
+                continue
+
+            html = resp.text
+            text = clean_html(html)
+            if not text:
+                continue
+
+            # Simple title grab
+            title = url
+            soup = BeautifulSoup(html, "html.parser")
+            if soup.title and soup.title.string:
+                title = soup.title.string.strip()
+
+            doc = {"url": url, "title": title, "text": text}
+            out_f.write(json.dumps(doc) + "\n")
+            n_pages += 1
+            print(f"[INFO] Crawled ({n_pages}) {url} depth={depth}")
+
+            # Discover new links
+            for a in soup.find_all("a", href=True):
+                href = a["href"].strip()
+                new_url = urljoin(url, href)
+                if new_url not in visited and is_ul_url(new_url):
+                    queue.append((new_url, depth + 1))
+
+            time.sleep(delay)
+
+    client.close()
+    print(f"[INFO] Done. Total pages written: {n_pages}")
