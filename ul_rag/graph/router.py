@@ -58,7 +58,7 @@ class Router:
             topic=topic,
             needs_multi_hop=False,
             retrieval_mode="hybrid",
-            max_chunks=6,
+            max_chunks=8,
             domain_hint=None,
         )
 
