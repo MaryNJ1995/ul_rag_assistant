@@ -173,3 +173,54 @@ def run_ul_rag(question: str, mode: str = "student", locale: str = "IE") -> Dict
         "meta": final_state["meta"],
         "plan": final_state.get("plan"),
     }
+
+
+
+def run_ul_rag_debug(question: str, mode: str = "student", locale: str = "IE") -> Dict[str, Any]:
+    """
+    Simpler, evaluation-friendly path that returns contexts as plain text.
+    Uses the same router/retriever/generator as the main graph, but
+    exposes the retrieved contexts for eval frameworks like RAGAS/DeepEval.
+    """
+    # 1) Route the query (Router.route currently only takes the question)
+    plan: QueryPlan = router.route(question)
+
+    # 2) Retrieve docs unless it's chit-chat / nonsense
+    if plan.query_type in ("chitchat", "nonsense"):
+        docs: List[ULDoc] = []
+    else:
+        docs = retriever.retrieve(question, max_chunks=plan.max_chunks)
+
+    # 3) Generate answer (generator.answer is async, so we must await it)
+    resp = asyncio.run(
+        generator.answer(
+            question,
+            docs,
+            mode=mode,
+            locale=locale,
+        )
+    )
+
+    answer = resp.get("answer", "")
+    citations = resp.get("citations", [])
+
+    # Extract just the text of contexts
+    contexts = [d.get("text", "") for d in docs]
+
+    return {
+        "answer": answer,
+        "contexts": contexts,
+        "citations": citations,
+        "meta": {
+            "mode": mode,
+            "locale": locale,
+            "plan": {
+                "query_type": plan.query_type,
+                "topic": plan.topic,
+                "needs_multi_hop": plan.needs_multi_hop,
+                "retrieval_mode": plan.retrieval_mode,
+                "max_chunks": plan.max_chunks,
+                "domain_hint": plan.domain_hint,
+            },
+        },
+    }
