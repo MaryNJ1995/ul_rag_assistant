@@ -16,7 +16,7 @@ class Settings:
     rerank_model: str = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
     index_path: str = os.getenv("INDEX_PATH", "/home/maryam_najafi/ul_bot/ul_rag_assistant/storage/index/ul_index.pkl")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
-
+    eval_path: str = os.getenv("EVAL_PATH", "/home/maryam_najafi/ul_bot/ul_rag_assistant/data/eval/ul_eval.jsonl")
 
 def get_settings() -> Settings:
     settings = Settings()
