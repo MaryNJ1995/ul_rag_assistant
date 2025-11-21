@@ -8,11 +8,11 @@ from ragas.metrics import AnswerRelevancy, Faithfulness, ContextRecall, ContextP
 from tqdm import tqdm
 from ul_rag_assistant.ul_rag.graph.graph import run_ul_rag_debug
 
-
-def load_eval_data(path: str) -> List[Dict[str, Any]]:
+from itertools import islice
+def load_eval_data(path: str, max_rows:int=20) -> List[Dict[str, Any]]:
     data = []
     with open(path, "r", encoding="utf-8") as f:
-        for line in f:
+        for line in islice(f, max_rows):
             line = line.strip()
             if not line:
                 continue
@@ -64,10 +64,11 @@ def main():
     result = evaluate(ragas_ds, metrics=metrics)
     df = result.to_pandas()
     print(df)
-    df.to_excel("/home/maryam_najafi/ul_bot/ul_rag_assistant/data/eval/ragas_result.xlsx")
-
     print("\n--- Averages ---")
     print(df.mean(numeric_only=True))
+
+
+    df.to_excel("/home/maryam_najafi/ul_bot/ul_rag_assistant/data/eval/ragas_result.xlsx")
 
 
 if __name__ == "__main__":
