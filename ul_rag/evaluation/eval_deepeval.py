@@ -6,7 +6,7 @@ This uses the RAG triad:
   - Answer Relevancy
   - Faithfulness
   - Contextual Relevancy
-on your UL-specific eval dataset (ul_eval.jsonl).
+on My UL-specific eval dataset (ul_eval.jsonl).
 """
 
 import json
@@ -29,7 +29,7 @@ MAX_EVAL: int | None = 20  # set to None to use all
 
 
 def load_eval_data(path: str) -> List[Dict[str, Any]]:
-    """Load your UL eval dataset from JSONL."""
+    """Load My UL eval dataset from JSONL."""
     data = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -53,7 +53,7 @@ def build_llm_test_cases(eval_data: List[Dict[str, Any]]) -> List[LLMTestCase]:
     for row in tqdm(eval_data, desc="Building test cases"):
         q = row["question"]
 
-        # Call your RAG pipeline (debug version that returns contexts)
+        # Call My RAG pipeline (debug version that returns contexts)
         resp = run_ul_rag_debug(q, mode="student", locale="IE")
 
         answer = resp["answer"]

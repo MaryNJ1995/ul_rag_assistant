@@ -21,7 +21,7 @@ Usage examples:
   # Run only evaluations on existing index
   python scripts/run_workflow.py --skip-crawl --skip-index
 
-Adjust the paths in WORKFLOW_CONFIG if your directory structure differs.
+Adjust the paths in WORKFLOW_CONFIG if the directory structure differs.
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def step_build_index(delete_existing: bool = True) -> None:
 def step_infer_smoke() -> None:
     """
     Simple smoke test: run the inferencer script with a fixed test question.
-    Adjust this if your inferencer.py has different CLI args.
+    Adjust this if the inferencer.py has different CLI args.
     """
     cfg = WORKFLOW_CONFIG
     infer_script: Path = cfg["infer_script"]

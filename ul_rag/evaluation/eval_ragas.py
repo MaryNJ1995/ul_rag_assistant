@@ -24,14 +24,14 @@ def load_eval_data(path: str) -> List[Dict[str, Any]]:
 
 
 def build_ragas_dataset(eval_data: List[Dict[str, Any]]) -> Dataset:
-    """Run your UL RAG pipeline on each question and prepare HF Dataset for RAGAS."""
+    """Run My UL RAG pipeline on each question and prepare HF Dataset for RAGAS."""
     records = []
 
     for row in tqdm(eval_data):
         q = row["question"]
         gt = row["ground_truth"]
 
-        # Call your debug pipeline to get answer + contexts
+        # Call My debug pipeline to get answer + contexts
         resp = run_ul_rag_debug(q, mode="student", locale="IE")
 
         answer = resp["answer"]
@@ -50,7 +50,7 @@ def build_ragas_dataset(eval_data: List[Dict[str, Any]]) -> Dataset:
 
 
 def main():
-    eval_path = "/home/maryam_najafi/ul_bot/ul_rag_assistant/data/eval/ul_eval.jsonl"   # your eval file
+    eval_path = "/home/maryam_najafi/ul_bot/ul_rag_assistant/data/eval/ul_eval.jsonl"
     eval_data = load_eval_data(eval_path)
     ragas_ds = build_ragas_dataset(eval_data)
 
