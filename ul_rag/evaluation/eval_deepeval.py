@@ -6,30 +6,38 @@ This uses the RAG triad:
   - Answer Relevancy
   - Faithfulness
   - Contextual Relevancy
-on My UL-specific eval dataset (ul_eval.jsonl).
+on my UL-specific eval dataset (ul_eval.jsonl).
+
+It evaluates each question individually and saves
+per-question results into an Excel file.
 """
 
 import json
 from typing import List, Dict, Any
 
 from tqdm import tqdm
+import pandas as pd
+
 from deepeval.test_case import LLMTestCase
 from deepeval.metrics import (
     AnswerRelevancyMetric,
     FaithfulnessMetric,
     ContextualRelevancyMetric,
 )
-from deepeval import evaluate
 
 from ul_rag_assistant.ul_rag.graph.graph import run_ul_rag_debug
 
 
-# Limit how many eval questions to run to save quota
-MAX_EVAL: int | None = 20  # set to None to use all
+# Limit how many eval questions to run to save quota.
+# Set to None to use all.
+MAX_EVAL: int | None = 20
+
+# Cheaper OpenAI judge model
+JUDGE_MODEL = "gpt-4o-mini"
 
 
 def load_eval_data(path: str) -> List[Dict[str, Any]]:
-    """Load My UL eval dataset from JSONL."""
+    """Load my UL eval dataset from JSONL."""
     data = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -43,35 +51,10 @@ def load_eval_data(path: str) -> List[Dict[str, Any]]:
     return data
 
 
-def build_llm_test_cases(eval_data: List[Dict[str, Any]]) -> List[LLMTestCase]:
-    """
-    For each eval question, run the UL RAG pipeline,
-    then wrap (question, answer, contexts) into DeepEval's LLMTestCase.
-    """
-    test_cases: List[LLMTestCase] = []
-
-    for row in tqdm(eval_data, desc="Building test cases"):
-        q = row["question"]
-
-        # Call My RAG pipeline (debug version that returns contexts)
-        resp = run_ul_rag_debug(q, mode="student", locale="IE")
-
-        answer = resp["answer"]
-        contexts = resp.get("contexts", [])  # list[str]
-
-        # DeepEval expects list[str] for retrieval_context
-        test_case = LLMTestCase(
-            input=q,
-            actual_output=answer,
-            retrieval_context=contexts,
-        )
-        test_cases.append(test_case)
-
-    return test_cases
-
-
 def main():
-    eval_path = "data/eval/ul_eval.jsonl"
+    eval_path = "/home/maryam_najafi/ul_bot/ul_rag_assistant/data/eval/ul_eval.jsonl"
+    out_excel = "/home/maryam_najafi/ul_bot/ul_rag_assistant/data/eval/deepeval_results.xlsx"
+
     eval_data = load_eval_data(eval_path)
     print(f"Loaded {len(eval_data)} eval questions from {eval_path}")
 
@@ -80,36 +63,79 @@ def main():
         eval_data = eval_data[:MAX_EVAL]
         print(f"Using first {MAX_EVAL} questions for DeepEval (to reduce quota usage).")
 
-    test_cases = build_llm_test_cases(eval_data)
+    rows: List[Dict[str, Any]] = []
 
-    # --- Define RAG metrics (RAG triad) with cheaper model ---
-    # Change model to any cheaper OpenAI model you have (e.g. gpt-4o-mini)
-    judge_model = "gpt-4o-mini"
+    for row in tqdm(eval_data, desc="Evaluating with DeepEval"):
+        question = row["question"]
+        ground_truth = row["ground_truth"]
 
-    answer_relevancy = AnswerRelevancyMetric(model=judge_model)
-    faithfulness = FaithfulnessMetric(model=judge_model)
-    contextual_relevancy = ContextualRelevancyMetric(model=judge_model)
+        # 1) Run RAG pipeline
+        resp = run_ul_rag_debug(question, mode="student", locale="IE")
+        answer = resp.get("answer", "")
+        contexts = resp.get("contexts", [])  # list[str]
 
-    metrics = [answer_relevancy, faithfulness, contextual_relevancy]
+        # 2) Build DeepEval test case
+        test_case = LLMTestCase(
+            input=question,
+            actual_output=answer,
+            expected_output=ground_truth if ground_truth else None,
+            retrieval_context=contexts,
+        )
 
-    # --- Run evaluation ---
-    results = evaluate(test_cases, metrics=metrics)
+        # 3) Define metrics for THIS test case, using cheaper judge model
+        answer_relevancy = AnswerRelevancyMetric(model=JUDGE_MODEL)
+        faithfulness = FaithfulnessMetric(model=JUDGE_MODEL)
+        contextual_relevancy = ContextualRelevancyMetric(model=JUDGE_MODEL)
 
-    # Print per-test-case scores
-    for i, res in enumerate(results):
-        print(f"\n=== Test case {i+1}: {eval_data[i]['question']} ===")
-        for metric_name, score in res.items():
-            print(f"{metric_name}: {score}")
+        # 4) Safely measure metrics (don’t crash if quota/rate errors)
+        def safe_measure(metric, name: str):
+            try:
+                metric.measure(test_case)
+                return metric.score, metric.reason
+            except Exception as e:
+                # If quota/rate limit/etc., record failure instead of aborting
+                return None, f"{name} failed: {e}"
 
-    # Print averages
-    print("\n=== Averages ===")
-    # 'results' is a list of dicts: {metric_name: score, ...}
-    # We'll compute simple arithmetic mean per metric
-    metric_names = results[0].keys() if results else []
-    for name in metric_names:
-        scores = [r[name] for r in results]
-        avg = sum(scores) / len(scores) if scores else 0.0
-        print(f"{name}: {avg:.3f}")
+        ans_rel_score, ans_rel_reason = safe_measure(answer_relevancy, "answer_relevancy")
+        faith_score, faith_reason = safe_measure(faithfulness, "faithfulness")
+        ctx_rel_score, ctx_rel_reason = safe_measure(contextual_relevancy, "contextual_relevancy")
+
+        rows.append(
+            {
+                "question": question,
+                "ground_truth": ground_truth,
+                "answer": answer,
+                "contexts": " ||| ".join(contexts),
+                "answer_relevancy_score": ans_rel_score,
+                "answer_relevancy_reason": ans_rel_reason,
+                "faithfulness_score": faith_score,
+                "faithfulness_reason": faith_reason,
+                "contextual_relevancy_score": ctx_rel_score,
+                "contextual_relevancy_reason": ctx_rel_reason,
+            }
+        )
+
+    # 5) Save to Excel
+    df = pd.DataFrame(rows)
+    df.to_excel(out_excel, index=False)
+    print(f"\nSaved detailed DeepEval results to {out_excel}")
+
+    # 6) Print averages (ignoring failed / None scores)
+    if not df.empty:
+        def safe_mean(col: str) -> float:
+            vals = [v for v in df[col] if isinstance(v, (int, float, float))]
+            return sum(vals) / len(vals) if vals else 0.0
+
+        avg_ans_rel = safe_mean("answer_relevancy_score")
+        avg_faith = safe_mean("faithfulness_score")
+        avg_ctx_rel = safe_mean("contextual_relevancy_score")
+
+        print("\n=== Average DeepEval Scores (successful cases only) ===")
+        print(f"Answer Relevancy       : {avg_ans_rel:.3f}")
+        print(f"Faithfulness           : {avg_faith:.3f}")
+        print(f"Contextual Relevancy   : {avg_ctx_rel:.3f}")
+    else:
+        print("No rows in dataframe; nothing to average.")
 
 
 if __name__ == "__main__":
