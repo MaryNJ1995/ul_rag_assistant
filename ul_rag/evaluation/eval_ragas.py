@@ -64,7 +64,7 @@ def main():
     result = evaluate(ragas_ds, metrics=metrics)
     df = result.to_pandas()
     print(df)
-    df.to_excel("ragas_result.xlsx")
+    df.to_excel("/home/maryam_najafi/ul_bot/ul_rag_assistant/data/eval/ragas_result.xlsx")
 
     print("\n--- Averages ---")
     print(df.mean(numeric_only=True))
