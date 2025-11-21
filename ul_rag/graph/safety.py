@@ -27,5 +27,5 @@ class Safety:
     def escalation_message(self, locale: str = "IE") -> str:
         return (
             "I'm really sorry you're feeling this way. I'm not able to provide the help you deserve. "
-            "Please contact a trusted person or professional support service in your area immediately."
+            "If you are at risk / suicidal please immediately contact either the crisis liaison mental health team at the University Hospital Limerick (061 301111) or your local hospital, or your GP immediately. ."
         )
