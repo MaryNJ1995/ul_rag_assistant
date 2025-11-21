@@ -42,37 +42,55 @@ class RAGChatSession:
     def set_locale(self, locale: str) -> None:
         self.locale = locale
 
-    # ---------- NEW: memory helper ----------
+    # ---------- NEW: memory helper (last 2 user questions) ----------
 
     def _build_query_with_context(self, new_question: str) -> str:
         """
-        Very simple conversational memory:
+        Simple conversational memory:
 
-        - If there is a previous user question in the history, prepend it as:
-            "Previous question: <...>\\nFollow-up question: <...>"
-        - This helps the RAG pipeline resolve pronouns like 'he', 'she', 'they', 'it'
-          in short follow-up questions (e.g. 'what he does?').
+        - Look back through history and collect up to the last TWO user messages.
+        - If none exist, just return the new question.
+        - Otherwise, build a prompt like:
 
-        We only look at past history; we do NOT mutate it here.
+            Previous questions:
+            1) <older previous question>
+            2) <most recent previous question>
+            Current question: <new question>
+
+        This helps the RAG pipeline resolve pronouns like 'he', 'she', 'they', 'it'
+        across multiple follow-up questions.
         """
-        last_user_msg: Optional[str] = None
 
-        # Walk history backwards to find the *previous* user message
+        # Collect up to 2 previous user messages from history (IN REVERSE ORDER)
+        prev_user_msgs: List[str] = []
         for turn in reversed(self.history):
             if turn.role == "user":
-                last_user_msg = turn.content
-                break
+                prev_user_msgs.append(turn.content)
+                if len(prev_user_msgs) == 2:
+                    break
 
-        if last_user_msg is None:
-            # This is the first user message in the conversation
+        # No previous messages -> no context, just return current question
+        if not prev_user_msgs:
             return new_question
 
-        # Combine previous user question with the new follow-up
-        combined = (
-            f"Previous question: {last_user_msg}\n"
-            f"Follow-up question: {new_question}"
-        )
-        return combined
+        # We collected in reverse order (most recent first), so flip to chronological
+        prev_user_msgs = list(reversed(prev_user_msgs))
+
+        # Build the combined query
+        lines: List[str] = []
+
+        if len(prev_user_msgs) == 1:
+            # Only one previous question
+            lines.append(f"Previous question: {prev_user_msgs[0]}")
+        else:
+            # Two previous questions
+            lines.append("Previous questions:")
+            lines.append(f"1) {prev_user_msgs[0]}")
+            lines.append(f"2) {prev_user_msgs[1]}")
+
+        lines.append(f"Current question: {new_question}")
+
+        return "\n".join(lines)
 
     # ---------- Main entry point ----------
 
@@ -81,10 +99,11 @@ class RAGChatSession:
         Add the user's message to history, then call the RAG graph
         with a question that includes minimal conversational context.
         """
-        # Build the query that will be sent to RAG (with memory)
+        # IMPORTANT: build query-with-context *before* appending this user turn,
+        # so history contains only previous messages.
         question_with_context = self._build_query_with_context(text)
 
-        # Store the *raw* user message in history (what the human actually typed)
+        # Store the raw user message in history
         user_turn = ChatTurn(role="user", content=text)
         self.history.append(user_turn)
 
