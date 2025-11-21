@@ -13,6 +13,7 @@ per-question results into an Excel file.
 """
 
 import json
+from itertools import islice
 from typing import List, Dict, Any
 
 from tqdm import tqdm
@@ -36,17 +37,16 @@ MAX_EVAL: int | None = 20
 JUDGE_MODEL = "gpt-4o-mini"
 
 
-def load_eval_data(path: str) -> List[Dict[str, Any]]:
-    """Load my UL eval dataset from JSONL."""
+def load_eval_data(path: str, max_rows:int=20) -> List[Dict[str, Any]]:
     data = []
     with open(path, "r", encoding="utf-8") as f:
-        for line in f:
+        for line in islice(f, max_rows):
             line = line.strip()
             if not line:
                 continue
             obj = json.loads(line)
             q = obj["question"].strip()
-            gt = obj.get("ground_truth", "").strip()
+            gt = obj["ground_truth"].strip()
             data.append({"question": q, "ground_truth": gt})
     return data
 
