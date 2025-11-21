@@ -80,7 +80,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
-
+from tqdm import tqdm
 def is_ul_url(url: str) -> bool:
     # Only follow URLs that belong to UL or whitelisted domains
     parsed = urlparse(url)
@@ -98,7 +98,7 @@ def crawl_ul(seeds_path: str, out_path: str, max_depth: int = 3, max_pages: int 
     # 1. Load seeds
     seeds = []
     with open(seeds_path, "r", encoding="utf-8") as f:
-        for line in f:
+        for line in tqdm(f):
             line = line.strip()
             if not line:
                 continue
