@@ -11,3 +11,6 @@ storage/logs/*
 .idea/
 .vscode/
 .env
+data
+storage
+logs
