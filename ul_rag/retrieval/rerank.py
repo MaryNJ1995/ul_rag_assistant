@@ -37,11 +37,11 @@ class Reranker:
         scored: List[Tuple[float, str, Dict[str, Any]]] = []
         for (text, meta), s in zip(docs, scores):
             s_adj = float(s)
-            if domain_hint:
-                host = (meta.get("source_host") or meta.get("host") or "").lower()
-                url = (meta.get("source_url") or meta.get("path") or "").lower()
-                if domain_hint.lower() in host or domain_hint.lower() in url:
-                    s_adj += bias
+            # if domain_hint:
+            #     host = (meta.get("source_host") or meta.get("host") or "").lower()
+            #     url = (meta.get("source_url") or meta.get("path") or "").lower()
+            #     if domain_hint.lower() in host or domain_hint.lower() in url:
+            #         s_adj += bias
             scored.append((s_adj, text, meta))
 
         scored.sort(key=lambda x: x[0], reverse=True)
