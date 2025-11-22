@@ -58,7 +58,7 @@ class Router:
             topic=topic,
             needs_multi_hop=False,
             retrieval_mode="hybrid",
-            max_chunks=8,
+            max_chunks=10,
             domain_hint=None,
         )
 
@@ -122,11 +122,11 @@ class Router:
 
         needs_multi_hop = bool(data.get("needs_multi_hop", False))
 
-        max_chunks = data.get("max_chunks", 6)
+        max_chunks = data.get("max_chunks", 10)
         try:
             max_chunks_int = int(max_chunks)
         except Exception:
-            max_chunks_int = 6
+            max_chunks_int = 8
 
         dh = data.get("domain_hint")
         domain_hint = dh if isinstance(dh, str) and dh else None
@@ -153,7 +153,7 @@ class Router:
                     {"role": "system", "content": system},
                     {"role": "user", "content": f"USER MESSAGE:\n{question}"},
                 ],
-                temperature=0.0,
+                temperature=0.1,
             )
             content = resp.choices[0].message.content or ""
         except Exception as e:
