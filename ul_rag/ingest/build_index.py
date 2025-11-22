@@ -1,64 +1,202 @@
-from __future__ import annotations
-
+#!/usr/bin/env python
+import argparse
 import json
-import pickle
-from pathlib import Path
-from typing import List, Dict, Any, Optional
+import os
+from glob import glob
+from typing import List, Dict, Any
 
-from sentence_transformers import SentenceTransformer
+import numpy as np
 from rank_bm25 import BM25Okapi
+from sentence_transformers import SentenceTransformer
+from pypdf import PdfReader
 
 from ul_rag_assistant.ul_rag.config import get_settings
 from ul_rag_assistant.ul_rag.logging import get_logger
 
 log = get_logger(__name__)
 
+settings = get_settings()
+def load_jsonl_corpus(path: str) -> List[Dict[str, Any]]:
+    docs = []
+    if not os.path.exists(path):
+        log.warning(f"JSONL input not found at {path}, skipping.")
+        return docs
 
-def _simple_chunk(text: str, max_tokens: int = 200) -> List[str]:
-    """Very simple whitespace-based chunker."""
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            text = obj.get("text", "").strip()
+            if not text:
+                continue
+            docs.append(
+                {
+                    "text": text,
+                    "meta": {
+                        "source_url": obj.get("url"),
+                        "title": obj.get("title"),
+                        "source": "web",
+                    },
+                }
+            )
+    log.info(f"Loaded {len(docs)} web docs from JSONL.")
+    return docs
+
+
+def load_md_dir(md_dir: str) -> List[Dict[str, Any]]:
+    docs = []
+    if not md_dir or not os.path.isdir(md_dir):
+        log.info(f"MD directory {md_dir} not found or not a directory; skipping.")
+        return docs
+
+    md_paths = glob(os.path.join(md_dir, "**", "*.md"), recursive=True)
+    for path in md_paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read().strip()
+        except Exception as e:
+            log.warning(f"Failed to read MD file {path}: {e}")
+            continue
+        if not text:
+            continue
+        docs.append(
+            {
+                "text": text,
+                "meta": {
+                    "path": path,
+                    "title": os.path.basename(path),
+                    "source": "md",
+                },
+            }
+        )
+    log.info(f"Loaded {len(docs)} Markdown docs from {md_dir}.")
+    return docs
+
+
+def extract_text_from_pdf(path: str) -> str:
+    try:
+        reader = PdfReader(path)
+        pages_text = []
+        for page in reader.pages:
+            t = page.extract_text() or ""
+            pages_text.append(t)
+        text = "\n".join(pages_text)
+        return " ".join(text.split())
+    except Exception as e:
+        log.warning(f"Failed to extract PDF text from {path}: {e}")
+        return ""
+
+
+def load_pdf_dir(pdf_dir: str) -> List[Dict[str, Any]]:
+    docs = []
+    if not pdf_dir or not os.path.isdir(pdf_dir):
+        log.info(f"PDF directory {pdf_dir} not found or not a directory; skipping.")
+        return docs
+
+    pdf_paths = glob(os.path.join(pdf_dir, "**", "*.pdf"), recursive=True)
+    for path in pdf_paths:
+        text = extract_text_from_pdf(path)
+        if not text:
+            continue
+        docs.append(
+            {
+                "text": text,
+                "meta": {
+                    "path": path,
+                    "title": os.path.basename(path),
+                    "source": "pdf",
+                },
+            }
+        )
+    log.info(f"Loaded {len(docs)} PDF docs from {pdf_dir}.")
+    return docs
+
+
+def simple_chunk(text: str, max_tokens: int = 200) -> List[str]:
+    """
+    Very simple whitespace-based chunking.
+    You can later replace this with a token-based or sentence-based splitter.
+    """
     words = text.split()
-    chunks: List[str] = []
+    chunks = []
     for i in range(0, len(words), max_tokens):
-        chunk = " ".join(words[i:i+max_tokens])
-        if chunk:
-            chunks.append(chunk)
+        chunk_words = words[i : i + max_tokens]
+        chunks.append(" ".join(chunk_words))
     return chunks
 
 
-def build_index_from_jsonl(input_jsonl: str, index_path: Optional[str] = None) -> None:
-    """Build BM25 + dense embeddings index from a JSONL corpus.
+def build_index(
+    input_jsonl: str,
+    index_path: str,
+    md_dir: str = None,
+    pdf_dir: str = None,
+    embed_model_name: str = None,
+):
+    # 1. Load all docs: web JSONL + MD + PDF
+    all_docs: List[Dict[str, Any]] = []
 
-    Each line in `input_jsonl` must contain:
-      {"url": ..., "title": ..., "text": ...}
-    """
-    settings = get_settings()
-    embed_model_name = settings.embed_model
-    if index_path is None:
-        index_path = settings.index_path
+    web_docs = load_jsonl_corpus(input_jsonl)
+    all_docs.extend(web_docs)
+
+    md_docs = load_md_dir(md_dir) if md_dir else []
+    all_docs.extend(md_docs)
+
+    pdf_docs = load_pdf_dir(pdf_dir) if pdf_dir else []
+    all_docs.extend(pdf_docs)
+
+    if not all_docs:
+        log.error("No documents loaded! Aborting index build.")
+        return
+
+    log.info(f"Total raw documents before chunking: {len(all_docs)}")
+
+    # 2. Chunk all docs
+    texts: List[str] = []
+    metas: List[Dict[str, Any]] = []
 
     texts: List[str] = []
     metas: List[Dict[str, Any]] = []
 
-    for line in Path(input_jsonl).read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        obj = json.loads(line)
-        url = obj.get("url")
-        title = obj.get("title") or url
-        text = obj.get("text") or ""
-        for chunk in _simple_chunk(text):
-            texts.append(chunk)
-            metas.append({"source_url": url, "title": title})
+    seen_chunks = set()  # for exact dedup based on normalized text
 
-    log.info(f"Building index from {len(texts)} chunks")
+    for doc in all_docs:
+        text = doc["text"]
+        meta = doc.get("meta", {})
+        chunks = simple_chunk(text, max_tokens=200)
+        for ch in chunks:
+            norm = " ".join(ch.split())  # normalize whitespace
+            if not norm:
+                continue
+            if norm in seen_chunks:
+                continue  # skip exact duplicate chunk
+            seen_chunks.add(norm)
+            texts.append(ch)
+            metas.append(meta)
 
-    model = SentenceTransformer(embed_model_name)
-    embeddings = model.encode(texts, show_progress_bar=True, convert_to_numpy=True)
+    log.info(f"Total chunks to index: {len(texts)}")
+
+    # 3. Build embeddings
+    embed_model_name = embed_model_name or settings.embed_model
+    log.info(f"Loading embedding model: {embed_model_name}")
+    embed_model = SentenceTransformer(embed_model_name)
+
+    log.info("Encoding embeddings...")
+    embeddings = embed_model.encode(texts, show_progress_bar=True)
+    embeddings = np.array(embeddings, dtype="float32")
+
+    # 4. Build BM25 index
     tokenized_corpus = [t.split() for t in texts]
     bm25 = BM25Okapi(tokenized_corpus)
 
-    index = {
+    # 5. Save index as pickle
+    os.makedirs(os.path.dirname(index_path), exist_ok=True)
+
+    index_obj = {
         "texts": texts,
         "metas": metas,
         "embeddings": embeddings,
@@ -66,9 +204,40 @@ def build_index_from_jsonl(input_jsonl: str, index_path: Optional[str] = None) -
         "embed_model": embed_model_name,
     }
 
-    idx_path = Path(index_path)
-    idx_path.parent.mkdir(parents=True, exist_ok=True)
-    with idx_path.open("wb") as f:
-        pickle.dump(index, f)
+    import pickle
 
-    log.info(f"Saved index to {idx_path}")
+    with open(index_path, "wb") as f:
+        pickle.dump(index_obj, f)
+
+    log.info(f"Index saved to {index_path}.")
+    log.info(
+        f"Index stats: {len(texts)} chunks, {len(all_docs)} source docs "
+        f"(web={len(web_docs)}, md={len(md_docs)}, pdf={len(pdf_docs)})"
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", type=str,
+                        default="/home/maryam_najafi/ul_bot/ul_rag_assistant/data/ul/ul_data.jsonl",
+                        help="Input JSONL corpus.")
+    parser.add_argument("--index_path", type=str,
+                        default="/home/maryam_najafi/ul_bot/ul_rag_assistant/storage/index/ul_index.pkl",
+                        help="Where to store index pickle (overrides INDEX_PATH env).")
+    parser.add_argument("--md_dir", type=str, default="/home/maryam_najafi/ul_bot/ul_rag_assistant/data/ul/md", help="Directory with .md files to include.")
+    parser.add_argument("--pdf_dir", type=str, default="/home/maryam_najafi/ul_bot/ul_rag_assistant/data/ul/pdf", help="Directory with .pdf files to include.")
+    args = parser.parse_args()
+
+    build_index(
+        input_jsonl=args.input,
+        index_path=args.index_path,
+        md_dir=args.md_dir,
+        pdf_dir=args.pdf_dir,
+        embed_model_name=settings.embed_model,
+    )
+
+
+
+
+if __name__ == "__main__":
+    main()
