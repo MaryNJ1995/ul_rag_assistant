@@ -98,7 +98,7 @@ class Generator:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                temperature=0.3,
+                temperature=0.1,
             )
             answer = resp.choices[0].message.content
         except Exception as e:
@@ -132,7 +132,7 @@ class Generator:
                 {"role": "system", "content": system},
                 {"role": "user", "content": question},
             ],
-            temperature=0.6,
+            temperature=0.3,
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -163,7 +163,7 @@ class Generator:
                 {"role": "system", "content": system},
                 {"role": "user", "content": question},
             ],
-            temperature=0.3,
+            temperature=0.1,
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -240,46 +240,42 @@ class Generator:
             return text
         return text[: max_len].rsplit(" ", 1)[0] + "…"
 
-    def _format_context(self, ctx: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
-        """
-        Convert a list of context items into:
-
-          - a formatted string for the LLM, and
-          - a list of citation objects [{"n": i, "source": ...}, ...]
-
-        This function is deliberately defensive, so that malformed items
-        cannot crash the whole pipeline.
-        """
+    def _format_context(self, ctx: List[Dict[str, Any]]):
         lines: List[str] = []
         cites: List[Dict[str, Any]] = []
-        idx = 1  # we want contiguous numbering even if we skip bad items
 
-        for raw_item in ctx:
-            text, meta = self._extract_text_and_meta(raw_item)
-            if not text:
-                log.warning(f"Skipping context item without usable text: {raw_item!r}")
+        idx = 1
+        for item in ctx:
+            # 1. Robust text extraction
+            raw = item.get("text")
+            if raw is None:
+                raw = item.get("page_content")
+            if raw is None:
+                # Nothing usable; skip
                 continue
 
-            snippet = self._strip_frontmatter(text)
+            snippet = self._strip_frontmatter(raw)
             snippet = self._shorten(snippet, 550)
 
-            # Derive a reasonable source/path label
-            source_url = None
-            if isinstance(meta, dict):
-                source_url = (
-                    meta.get("source_url")
-                    or meta.get("url")
-                    or meta.get("path")
-                    or meta.get("source")
-                )
+            # 2. Robust metadata handling
+            meta = item.get("meta", {})
+            if not isinstance(meta, dict):
+                meta = {}
 
-            path = source_url or "document"
+            path = (
+                meta.get("source_url")
+                or meta.get("path")
+                or meta.get("source")
+                or meta.get("url")
+                or "document"
+            )
 
             lines.append(f"[{idx}] {snippet}\n(Source: {path})\n")
             cites.append({"n": idx, "source": path})
             idx += 1
 
         return "\n".join(lines), cites
+
 
     # -------------------------------------------------------------------------
     # Fallback answer when no OpenAI key or API failure
