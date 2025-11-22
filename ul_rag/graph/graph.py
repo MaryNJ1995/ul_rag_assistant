@@ -71,7 +71,7 @@ def retrieve_node(state: ULState) -> ULState:
         topic=plan_dict.get("topic", "ul"),
         needs_multi_hop=bool(plan_dict.get("needs_multi_hop", False)),
         retrieval_mode=plan_dict.get("retrieval_mode", "hybrid"),  # type: ignore[arg-type]
-        max_chunks=int(plan_dict.get("max_chunks", 6)),
+        max_chunks=int(plan_dict.get("max_chunks", 10)),
         domain_hint=plan_dict.get("domain_hint"),
     )
 
