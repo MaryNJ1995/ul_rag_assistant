@@ -1,3 +1,4 @@
+# ul_rag/graph/graph.py
 from __future__ import annotations
 
 from typing import List, Literal, TypedDict, Optional, Dict, Any
@@ -5,11 +6,11 @@ import asyncio
 
 from langgraph.graph import StateGraph, END
 
-from ul_rag_assistant.ul_rag.retrieval.retriever import Retriever
-from ul_rag_assistant.ul_rag.llm.generate import Generator
-from ul_rag_assistant.ul_rag.graph.safety import Safety
-from ul_rag_assistant.ul_rag.graph.router import Router, QueryPlan
-from ul_rag_assistant.ul_rag.logging import get_logger
+from ..retrieval.retriever import Retriever
+from ..llm.generate import Generator
+from .safety import Safety
+from .router import Router, QueryPlan
+from ..logging import get_logger
 
 log = get_logger(__name__)
 
@@ -67,7 +68,7 @@ def retrieve_node(state: ULState) -> ULState:
     plan_dict = state.get("plan") or {}
     qp = QueryPlan(
         query_type=plan_dict.get("query_type", "general"),  # type: ignore[arg-type]
-        topic=plan_dict.get("topic", ""),
+        topic=plan_dict.get("topic", "ul"),
         needs_multi_hop=bool(plan_dict.get("needs_multi_hop", False)),
         retrieval_mode=plan_dict.get("retrieval_mode", "hybrid"),  # type: ignore[arg-type]
         max_chunks=int(plan_dict.get("max_chunks", 6)),
@@ -77,11 +78,12 @@ def retrieve_node(state: ULState) -> ULState:
     if qp.query_type in ("chitchat", "nonsense"):
         return {**state, "docs": []}
 
-    docs = retriever.retrieve(state["question"], max_chunks=qp.max_chunks)
+    docs = retriever.retrieve(state["question"], max_chunks=qp.max_chunks, domain_hint=qp.domain_hint)
     return {**state, "docs": docs}
 
 
 def generate_node(state: ULState) -> ULState:
+    # If safety already set an answer, do nothing
     if state.get("answer") is not None:
         return state
 
@@ -89,32 +91,33 @@ def generate_node(state: ULState) -> ULState:
     query_type = plan_dict.get("query_type", "general")
 
     if query_type == "chitchat":
-        q = state["question"]
-        ans = asyncio.run(generator.answer_chitchat(q, mode=state["mode"], locale=state["locale"]))
-        return {
-            **state,
-            "answer": ans,
-            "citations": [],
-            "meta": {**state.get("meta", {}), "intent": "chitchat"},
-        }
+        ans = asyncio.run(
+            generator.answer_chitchat(
+                state["question"],
+                mode=state["mode"],
+                locale=state["locale"],
+            )
+        )
+        return {**state, "answer": ans, "citations": [], "meta": {"intent": "chitchat"}}
 
     if query_type == "nonsense":
-        q = state["question"]
-        ans = asyncio.run(generator.answer_nonsense(q, mode=state["mode"], locale=state["locale"]))
-        return {
-            **state,
-            "answer": ans,
-            "citations": [],
-            "meta": {**state.get("meta", {}), "intent": "nonsense"},
-        }
+        ans = asyncio.run(
+            generator.answer_nonsense(
+                state["question"],
+                mode=state["mode"],
+                locale=state["locale"],
+            )
+        )
+        return {**state, "answer": ans, "citations": [], "meta": {"intent": "nonsense"}}
 
     docs = state.get("docs") or []
     if not docs:
         return {
             **state,
             "answer": (
-                "Sorry, I couldn't find any University of Limerick documents clearly related to that question. "
-                "Try rephrasing it, or check the official UL website or department directly."
+                "Sorry, I couldn't find any University of Limerick documents clearly "
+                "related to that question. Try rephrasing it, or check the official UL "
+                "website or department directly."
             ),
             "citations": [],
             "meta": {"ctx": 0},
@@ -175,36 +178,19 @@ def run_ul_rag(question: str, mode: str = "student", locale: str = "IE") -> Dict
     }
 
 
-
 def run_ul_rag_debug(question: str, mode: str = "student", locale: str = "IE") -> Dict[str, Any]:
     """
-    Simpler, evaluation-friendly path that returns contexts as plain text.
-    Uses the same router/retriever/generator as the main graph, but
-    exposes the retrieved contexts for eval frameworks like RAGAS/DeepEval.
+    Evaluation-friendly path that returns contexts as plain text and plan.
     """
-    # 1) Route the query (Router.route currently only takes the question)
-    plan: QueryPlan = router.route(question)
-
-    # 2) Retrieve docs unless it's chit-chat / nonsense
+    plan = router.route(question)
     if plan.query_type in ("chitchat", "nonsense"):
-        docs: List[ULDoc] = []
+        docs = []
     else:
-        docs = retriever.retrieve(question, max_chunks=plan.max_chunks)
+        docs = retriever.retrieve(question, max_chunks=plan.max_chunks, domain_hint=plan.domain_hint)
 
-    # 3) Generate answer (generator.answer is async, so we must await it)
-    resp = asyncio.run(
-        generator.answer(
-            question,
-            docs,
-            mode=mode,
-            locale=locale,
-        )
-    )
-
-    answer = resp.get("answer", "")
-    citations = resp.get("citations", [])
-
-    # Extract just the text of contexts
+    gen_resp = asyncio.run(generator.answer(question, docs, mode=mode, locale=locale))
+    answer = gen_resp["answer"]
+    citations = gen_resp["citations"]
     contexts = [d.get("text", "") for d in docs]
 
     return {
@@ -222,5 +208,5 @@ def run_ul_rag_debug(question: str, mode: str = "student", locale: str = "IE") -
                 "max_chunks": plan.max_chunks,
                 "domain_hint": plan.domain_hint,
             },
-        },
+    },
     }
