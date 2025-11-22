@@ -131,7 +131,7 @@ class Retriever:
         reranked = self.reranker.rerank(
             query=query,
             docs=candidates,
-            domain_hint=domain_hint,
+            # domain_hint=domain_hint,
         )
 
         top = reranked[:max_chunks]
