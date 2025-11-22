@@ -103,7 +103,7 @@ class Retriever:
     def retrieve(
         self,
         query: str,
-        max_chunks: int = 6,
+        max_chunks: int = 10,
         domain_hint: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
