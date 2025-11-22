@@ -1,97 +1,149 @@
+# ul_rag/retrieval/retriever.py
 from __future__ import annotations
 
 import pickle
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 
-from ul_rag_assistant.ul_rag.config import get_settings
-from ul_rag_assistant.ul_rag.logging import get_logger
-from ul_rag_assistant.ul_rag.retrieval.rerank import Reranker
+from ..config import get_settings
+from ..logging import get_logger
+from .rerank import Reranker
 
 log = get_logger(__name__)
 
 
+@dataclass
+class IndexedCorpus:
+    texts: List[str]
+    metas: List[Dict[str, Any]]
+    embeddings: np.ndarray  # shape: (N, d)
+    bm25: BM25Okapi
+
+
 class Retriever:
-    def __init__(self):
-        settings = get_settings()
-        self.index_path = Path(settings.index_path)
-        self.embed_model_name = settings.embed_model
-        self._load_index()
-        self._emb_model: SentenceTransformer | None = None
-        self.reranker = Reranker()
+    def __init__(self, index_path: Optional[Path] = None) -> None:
+        self.settings = get_settings()
+        self.index_path = index_path or self.settings.index_path
 
-    def _load_index(self):
         if not self.index_path.exists():
-            raise FileNotFoundError(f"Index not found at {self.index_path}. Run ingestion first.")
-        with self.index_path.open("rb") as f:
-            data = pickle.load(f)
-        self.texts: List[str] = data["texts"]
-        self.metas: List[Dict[str, Any]] = data["metas"]
-        self.embeddings: np.ndarray = data["embeddings"]
-        self.bm25: BM25Okapi = data["bm25"]
+            raise FileNotFoundError(
+                f"Index file not found at {self.index_path}. "
+                f"Run the index builder script first."
+            )
 
-    @property
-    def emb_model(self) -> SentenceTransformer:
-        if self._emb_model is None:
-            self._emb_model = SentenceTransformer(self.embed_model_name)
-        return self._emb_model
+        self.corpus: IndexedCorpus = self._load_index(self.index_path)
+        self.embed_model = SentenceTransformer(self.settings.embed_model)
+        self.reranker = Reranker(self.settings.rerank_model)
 
-    def _dense_search(self, query: str, top_k: int = 20) -> List[Tuple[str, Dict[str, Any], float]]:
-        q_emb = self.emb_model.encode([query], convert_to_numpy=True)[0]
-        sims = np.dot(self.embeddings, q_emb) / (
-            np.linalg.norm(self.embeddings, axis=1) * np.linalg.norm(q_emb) + 1e-8
+        log.info(
+            f"Retriever initialised with {len(self.corpus.texts)} chunks "
+            f"and model {self.settings.embed_model}"
         )
-        idxs = np.argsort(-sims)[:top_k]
-        results = []
-        for i in idxs:
-            i = int(i)
-            results.append((self.texts[i], self.metas[i], float(sims[i])))
-        return results
 
-    def _sparse_search(self, query: str, top_k: int = 20) -> List[Tuple[str, Dict[str, Any], float]]:
-        scores = self.bm25.get_scores(query.split())
-        idxs = np.argsort(-scores)[:top_k]
-        results = []
-        for i in idxs:
-            i = int(i)
-            results.append((self.texts[i], self.metas[i], float(scores[i])))
-        return results
+    def _load_index(self, path: Path) -> IndexedCorpus:
+        log.info(f"Loading index from {path}")
+        with path.open("rb") as f:
+            data = pickle.load(f)
 
-    def retrieve(self, query: str, max_chunks: int = 8) -> List[Dict[str, Any]]:
-        dense = self._dense_search(query, top_k=max_chunks * 3)
-        sparse = self._sparse_search(query, top_k=max_chunks * 3)
+        texts: List[str] = data["texts"]
+        metas: List[Dict[str, Any]] = data["metas"]
+        embeddings: np.ndarray = data["embeddings"]
+        bm25: BM25Okapi = data["bm25"]
 
-        def rrf_rank(items):
-            return { id(meta): rank for rank, (_, meta, _) in enumerate(items, start=1) }
+        if embeddings.shape[0] != len(texts):
+            raise ValueError(
+                f"Embeddings count {embeddings.shape[0]} "
+                f"!= texts count {len(texts)}"
+            )
 
-        dense_map = rrf_rank(dense)
-        sparse_map = rrf_rank(sparse)
+        log.info(
+            f"Index stats: {len(texts)} chunks, emb_dim={embeddings.shape[1]}"
+        )
+        return IndexedCorpus(texts=texts, metas=metas, embeddings=embeddings, bm25=bm25)
 
-        combined = {}
-        for (text, meta, _) in dense + sparse:
-            key = id(meta)
-            r1 = dense_map.get(key)
-            r2 = sparse_map.get(key)
-            score = 0.0
-            if r1 is not None:
-                score += 1.0 / (60 + r1)
-            if r2 is not None:
-                score += 1.0 / (60 + r2)
-            if key not in combined or combined[key][2] < score:
-                combined[key] = (text, meta, score)
+    # --- core retrieval ---
 
-        fused = list(combined.values())
-        fused.sort(key=lambda x: x[2], reverse=True)
-        fused = fused[: max_chunks * 2]
+    def _dense_search(self, query: str, k: int) -> List[Tuple[int, float]]:
+        q_emb = self.embed_model.encode(query, convert_to_numpy=True, normalize_embeddings=True)
+        docs_emb = self.corpus.embeddings
+        scores = docs_emb @ q_emb  # cosine if normalised
+        top_idx = np.argsort(scores)[::-1][:k]
+        return [(int(i), float(scores[i])) for i in top_idx]
 
-        reranked = self.reranker.rerank(query, [(t, m) for (t, m, _) in fused])
+    def _sparse_search(self, query: str, k: int) -> List[Tuple[int, float]]:
+        tokens = query.lower().split()
+        scores = self.corpus.bm25.get_scores(tokens)
+        top_idx = np.argsort(scores)[::-1][:k]
+        return [(int(i), float(scores[i])) for i in top_idx]
+
+    def _rrf_fuse(
+        self,
+        dense: List[Tuple[int, float]],
+        sparse: List[Tuple[int, float]],
+        k_rrf: int = 60,
+    ) -> List[int]:
+        """
+        Reciprocal Rank Fusion over dense + sparse results.
+        Returns a list of doc indices sorted by fused score.
+        """
+        ranks: Dict[int, float] = {}
+        for rank, (idx, _) in enumerate(dense):
+            ranks[idx] = ranks.get(idx, 0.0) + 1.0 / (k_rrf + rank)
+        for rank, (idx, _) in enumerate(sparse):
+            ranks[idx] = ranks.get(idx, 0.0) + 1.0 / (k_rrf + rank)
+
+        fused = sorted(ranks.items(), key=lambda x: x[1], reverse=True)
+        return [idx for idx, _ in fused]
+
+    def retrieve(
+        self,
+        query: str,
+        max_chunks: int = 6,
+        domain_hint: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Full pipeline: dense + BM25 + RRF + cross-encoder rerank.
+        """
+        if not query.strip():
+            return []
+
+        # 1. dense + sparse
+        k_candidates = max_chunks * 8
+        dense = self._dense_search(query, k=k_candidates)
+        sparse = self._sparse_search(query, k=k_candidates)
+
+        # 2. fuse
+        fused_idx = self._rrf_fuse(dense, sparse)
+        fused_idx = fused_idx[: k_candidates]
+
+        candidates: List[Tuple[str, Dict[str, Any]]] = []
+        for idx in fused_idx:
+            text = self.corpus.texts[idx]
+            meta = self.corpus.metas[idx]
+            candidates.append((text, meta))
+
+        # 3. rerank with domain bias
+        reranked = self.reranker.rerank(
+            query=query,
+            docs=candidates,
+            domain_hint=domain_hint,
+        )
+
         top = reranked[:max_chunks]
-
         docs = []
-        for i, (t, m, score) in enumerate(top, start=1):
-            docs.append({"text": t, "meta": m, "score": score, "rank": i})
+        for i, (score, text, meta) in enumerate(top, start=1):
+            docs.append(
+                {
+                    "text": text,
+                    "meta": meta,
+                    "score": float(score),
+                    "rank": i,
+                }
+            )
+        log.debug(f"Retriever: returned {len(docs)} docs for query={query!r}")
         return docs
